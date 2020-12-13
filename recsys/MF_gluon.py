@@ -43,8 +43,9 @@ def train(channel_input_dirs, hyperparameters, hosts, current_host, num_gpus, mo
     epochs = hyperparameters.get('epochs', 5)
 
     # define net
-    num_gpu = hyperparameters.get('num-gpu', 1)
-    if num_gpu > 0:
+    if num_gpus is None:
+        num_gpus = hyperparameters.get('num-gpus', 1)
+    if num_gpus > 0:
         ctx = mx.gpu()
     else:
         ctx = mx.cpu()
@@ -66,10 +67,7 @@ def train(channel_input_dirs, hyperparameters, hosts, current_host, num_gpus, mo
                              'momentum': momentum})
     
     # execute
-    trained_net = execute(train_iter, test_iter, net, trainer, epochs, ctx)
-    
-    if current_host == hosts[0]:
-        save(model_dir, trained_net)
+    trained_net = execute(train_iter, test_iter, net, trainer, epochs, ctx, batch_size)
     
     return trained_net, df_user_index, df_item_index
 
@@ -106,7 +104,7 @@ class MFBlock(gluon.HybridBlock):
         return predictions
 
     
-def execute(train_iter, test_iter, net, trainer, epochs, ctx):
+def execute(train_iter, test_iter, net, trainer, epochs, ctx, batch_size):
     loss_function = gluon.loss.L2Loss()
     for e in range(epochs):
         print("epoch: {}".format(e))
@@ -122,15 +120,15 @@ def execute(train_iter, test_iter, net, trainer, epochs, ctx):
                 loss.backward()
                 trainer.step(batch_size)
 
-        eval1 = eval_net(train_iter, net, ctx, loss_function)
-        eval2 = eval_net(test_iter, net, ctx, loss_function)
+        eval1 = eval_net(train_iter, net, ctx, loss_function, batch_size)
+        eval2 = eval_net(test_iter, net, ctx, loss_function, batch_size)
         print(f"EPOCH {e}: MSE TRAINING {eval1}, MSE TEST: {eval2}")
         
     print("end of training")
     return net
 
 
-def eval_net(data, net, ctx, loss_function):
+def eval_net(data, net, ctx, loss_function, batch_size):
     acc = MSE()
     for i, (user, item, label) in enumerate(data):
 
@@ -144,12 +142,11 @@ def eval_net(data, net, ctx, loss_function):
     return acc.get()[1]
 
 
-def save(model_dir, model):
+def save(model_dir, model, df_user_index=None, df_item_index=None):
     import os
     
-    net, df_user_index, df_item_index = model
     os.makedirs(model_dir)
-    net.save_parameters('{}/model.params'.format(model_dir))
+    model.save_parameters('{}/model.params'.format(model_dir))
     f = open('{}/MFBlock.params'.format(model_dir), 'w')
     json.dump({'max_users': net.max_users,
                'max_items': net.max_items,
@@ -262,7 +259,7 @@ def parse_args():
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--wd', type=float, default=0)
     parser.add_argument('--batch-size', type=int, default=100)
-    parser.add_argument('--num-gpu', type=int, default=1)
+    parser.add_argument('--num-gpus', type=int, default=None)
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=0.02)
 
@@ -295,9 +292,23 @@ if __name__ == '__main__':
         'momentum': args.momentum, 
         'wd': args.wd,
         'epochs': args.epochs,
-        'num-gpu': args.num_gpu,
+        'num-gpus': args.num_gpus,
         'batch-size': args.batch_size,
     }
 
-    train(channel_input_dirs, hps, args.hosts, args.current_host, num_gpus, args.model_dir)
+    hosts = args.hosts
+    current_host = args.current_host
+    model_dir = args.model_dir
+    
+    trained_net, df_user_index, df_item_index = train(
+        channel_input_dirs,
+        hps,
+        hosts,
+        current_host,
+        num_gpus,
+        model_dir,
+    )
+    
+    if current_host == hosts[0]:
+        save(model_dir, trained_net, df_user_index, df_item_index)
     
