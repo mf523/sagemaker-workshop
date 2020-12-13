@@ -285,7 +285,7 @@ if __name__ == '__main__':
         'train': args.train,
         'test': args.test,
         'user_index': args.user_index,
-        'item_index': args.test_index,
+        'item_index': args.item_index,
     }
     
     hps = {
@@ -296,7 +296,7 @@ if __name__ == '__main__':
         'wd': args.wd,
         'epochs': args.epochs,
         'num-gpu': args.num_gpu,
-        'batch-size': args.test_index,
+        'batch-size': args.batch_size,
     }
 
     train(channel_input_dirs, hps, args.hosts, args.current_host, num_gpus, args.model_dir)
