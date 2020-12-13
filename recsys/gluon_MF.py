@@ -1,3 +1,4 @@
+import argparse
 import logging
 import json
 import time
@@ -16,21 +17,25 @@ logging.basicConfig(level=logging.DEBUG)
 # Globals
 #########
 
-batch_size = 1024
-
-
 ##########
 # Training
 ##########
 
-def train(channel_input_dirs, hyperparameters, hosts, num_gpus, **kwargs):
+def train(channel_input_dirs, hyperparameters, hosts, current_host, num_gpus, model_dir, **kwargs):
     
+    batch_size = hyperparameters.get('batch-size', 1024)
     # get data
     training_dir = channel_input_dirs['train']
-    train_iter, test_iter, user_index, item_index = prepare_train_data(training_dir)
+    testing_dir = channel_input_dirs['test']
+    user_index_dir = channel_input_dirs['user_index']
+    item_index_dir = channel_input_dirs['item_index']
+    train_iter = load_train_data(training_dir, batch_size)
+    test_iter = load_test_data(testing_dir, batch_size)
+    df_user_index = load_user_index_data(user_index_dir)
+    df_item_index = load_item_index_data(item_index_dir)
     
     # get hyperparameters
-    num_embeddings = hyperparameters.get('num_embeddings', 64)
+    num_embeddings = hyperparameters.get('num-embeddings', 64)
     opt = hyperparameters.get('opt', 'sgd')
     lr = hyperparameters.get('lr', 0.02)
     momentum = hyperparameters.get('momentum', 0.9)
@@ -38,14 +43,14 @@ def train(channel_input_dirs, hyperparameters, hosts, num_gpus, **kwargs):
     epochs = hyperparameters.get('epochs', 5)
 
     # define net
-    num_gpu = hyperparameters.get('num_gpu', 1)
+    num_gpu = hyperparameters.get('num-gpu', 1)
     if num_gpu > 0:
         ctx = mx.gpu()
     else:
         ctx = mx.cpu()
 
-    net = MFBlock(max_users=user_index.shape[0], 
-                  max_items=item_index.shape[0],
+    net = MFBlock(max_users=df_user_index.shape[0], 
+                  max_items=df_item_index.shape[0],
                   num_emb=num_embeddings,
                   dropout_p=0.5)
     
@@ -63,7 +68,10 @@ def train(channel_input_dirs, hyperparameters, hosts, num_gpus, **kwargs):
     # execute
     trained_net = execute(train_iter, test_iter, net, trainer, epochs, ctx)
     
-    return trained_net, user_index, item_index
+    if current_host == hosts[0]:
+        save(model_dir, trained_net)
+    
+    return trained_net, df_user_index, df_item_index
 
 
 class MFBlock(gluon.HybridBlock):
@@ -114,9 +122,10 @@ def execute(train_iter, test_iter, net, trainer, epochs, ctx):
                 loss.backward()
                 trainer.step(batch_size)
 
-        print("EPOCH {}: MSE ON TRAINING and TEST: {}. {}".format(e,
-                                                                   eval_net(train_iter, net, ctx, loss_function),
-                                                                   eval_net(test_iter, net, ctx, loss_function)))
+        eval1 = eval_net(train_iter, net, ctx, loss_function)
+        eval2 = eval_net(test_iter, net, ctx, loss_function)
+        print(f"EPOCH {e}: MSE TRAINING {eval1}, MSE TEST: {eval2}")
+        
     print("end of training")
     return net
 
@@ -135,9 +144,12 @@ def eval_net(data, net, ctx, loss_function):
     return acc.get()[1]
 
 
-def save(model, model_dir):
-    net, user_index, item_index = model
-    net.save_params('{}/model.params'.format(model_dir))
+def save(model_dir, model):
+    import os
+    
+    net, df_user_index, df_item_index = model
+    os.makedirs(model_dir)
+    net.save_parameters('{}/model.params'.format(model_dir))
     f = open('{}/MFBlock.params'.format(model_dir), 'w')
     json.dump({'max_users': net.max_users,
                'max_items': net.max_items,
@@ -145,55 +157,54 @@ def save(model, model_dir):
                'dropout_p': net.dropout_p},
               f)
     f.close()
-    user_index.to_csv('{}/user_index.csv'.format(model_dir), index=False)
-    item_index.to_csv('{}/item_index.csv'.format(model_dir), index=False)
+    df_user_index.to_csv('{}/user_index.csv'.format(model_dir), index=False)
+    df_item_index.to_csv('{}/item_index.csv'.format(model_dir), index=False)
 
     
 ######
 # Data
 ######
 
-def prepare_train_data(training_data_file):
+def load_train_data(training_data_file, batch_size):
     df = pd.read_csv(training_data_file, delimiter=',', error_bad_lines=False)
-    df = df[['USER_ID', 'ITEM_ID', 'RATING']]
-    users = df['USER_ID'].value_counts()
-    items = df['ITEM_ID'].value_counts()
-    
-    # Filter long-tail
-    users = users[users >= 5]
-    items = items[items >= 10]
-
-    reduced_df = df.merge(pd.DataFrame({'USER_ID': users.index})).merge(pd.DataFrame({'ITEM_ID': items.index}))
-    users = reduced_df['USER_ID'].value_counts()
-    items = reduced_df['ITEM_ID'].value_counts()
-
-    # Number users and items
-    user_index = pd.DataFrame({'USER_ID': users.index, 'user_idx': np.arange(users.shape[0])})
-    item_index = pd.DataFrame({'ITEM_ID': items.index, 'item_idx': np.arange(items.shape[0])})
-
-    reduced_df = reduced_df.merge(user_index).merge(item_index)
-
-    # Split train and test
-    test_df = reduced_df.groupby('USER_ID').last().reset_index()
-
-    train_df = reduced_df.merge(test_df[['USER_ID', 'ITEM_ID']], 
-                                on=['USER_ID', 'ITEM_ID'], 
-                                how='outer', 
-                                indicator=True)
-    train_df = train_df[(train_df['_merge'] == 'left_only')]
+    df = df[['USER_ID', 'ITEM_ID', 'RATING', '_USER_IDX', '_ITEM_IDX']]
 
     # MXNet data iterators
-    train = gluon.data.ArrayDataset(nd.array(train_df['user_idx'].values, dtype=np.float32), 
-                                    nd.array(train_df['item_idx'].values, dtype=np.float32),
-                                    nd.array(train_df['RATING'].values, dtype=np.float32))
-    test  = gluon.data.ArrayDataset(nd.array(test_df['user_idx'].values, dtype=np.float32), 
-                                    nd.array(test_df['item_idx'].values, dtype=np.float32),
-                                    nd.array(test_df['RATING'].values, dtype=np.float32))
+    data = gluon.data.ArrayDataset(nd.array(df['_USER_IDX'].values, dtype=np.float32), 
+                                    nd.array(df['_ITEM_IDX'].values, dtype=np.float32),
+                                    nd.array(df['RATING'].values, dtype=np.float32))
 
-    train_iter = gluon.data.DataLoader(train, shuffle=True, num_workers=4, batch_size=batch_size, last_batch='rollover')
-    test_iter = gluon.data.DataLoader(train, shuffle=True, num_workers=4, batch_size=batch_size, last_batch='rollover')
+    data_iter = gluon.data.DataLoader(data, shuffle=True, num_workers=4, batch_size=batch_size, last_batch='rollover')
 
-    return train_iter, test_iter, user_index, item_index 
+    return data_iter
+
+
+def load_test_data(testing_data_file, batch_size):
+    df = pd.read_csv(testing_data_file, delimiter=',', error_bad_lines=False)
+    df = df[['USER_ID', 'ITEM_ID', 'RATING', '_USER_IDX', '_ITEM_IDX']]
+
+    # MXNet data iterators
+    data = gluon.data.ArrayDataset(nd.array(df['_USER_IDX'].values, dtype=np.float32), 
+                                    nd.array(df['_ITEM_IDX'].values, dtype=np.float32),
+                                    nd.array(df['RATING'].values, dtype=np.float32))
+
+    data_iter = gluon.data.DataLoader(data, shuffle=True, num_workers=4, batch_size=batch_size, last_batch='rollover')
+
+    return data_iter
+
+
+
+def load_user_index_data(user_index_data_file):
+    df = pd.read_csv(user_index_data_file, delimiter=',', error_bad_lines=False)
+    
+    return df
+
+
+def load_item_index_data(item_index_data_file):
+    df = pd.read_csv(item_index_data_file, delimiter=',', error_bad_lines=False)
+    
+    return df
+
 
 #########
 # Hosting
@@ -215,9 +226,9 @@ def model_fn(model_dir):
                   num_emb=block_params['num_emb'],
                   dropout_p=block_params['dropout_p'])
     net.load_params('{}/model.params'.format(model_dir), ctx)
-    user_index = pd.read_csv('{}/user_index.csv'.format(model_dir))
-    item_index = pd.read_csv('{}/item_index.csv'.format(model_dir))
-    return net, user_index, item_index
+    df_user_index = pd.read_csv('{}/user_index.csv'.format(model_dir))
+    df_item_index = pd.read_csv('{}/item_index.csv'.format(model_dir))
+    return net, df_user_index, df_item_index
 
 
 def transform_fn(net, data, input_content_type, output_content_type):
@@ -233,11 +244,60 @@ def transform_fn(net, data, input_content_type, output_content_type):
     ctx = mx.cpu()
     parsed = json.loads(data)
 
-    trained_net, user_index, item_index = net
-    users = pd.DataFrame({'USER_ID': parsed['USER_ID']}).merge(user_index, how='left')['user_idx'].values
-    items = pd.DataFrame({'ITEM_ID': parsed['ITEM_ID']}).merge(item_index, how='left')['item_idx'].values
+    trained_net, df_user_index, df_item_index = net
+    users = pd.DataFrame({'USER_ID': parsed['USER_ID']}).merge(df_user_index, how='left')['_USER_IDX'].values
+    items = pd.DataFrame({'ITEM_ID': parsed['ITEM_ID']}).merge(df_item_index, how='left')['_ITEM_IDX'].values
     
     predictions = trained_net(nd.array(users).as_in_context(ctx), nd.array(items).as_in_context(ctx))
     response_body = json.dumps(predictions.asnumpy().tolist())
 
     return response_body, output_content_type
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--num-embeddings', type=int, default=100)
+    parser.add_argument('--opt', type=str, default='sgd')
+    parser.add_argument('--momentum', type=float, default=0.9)
+    parser.add_argument('--wd', type=float, default=0)
+    parser.add_argument('--batch-size', type=int, default=100)
+    parser.add_argument('--num-gpu', type=int, default=1)
+    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--lr', type=float, default=0.02)
+
+    parser.add_argument('--model-dir', type=str, default=os.environ['SM_MODEL_DIR'])
+    parser.add_argument('--train', type=str, default=os.environ['SM_CHANNEL_TRAIN'])
+    parser.add_argument('--test', type=str, default=os.environ['SM_CHANNEL_TEST'])
+    parser.add_argument('--user-index', type=str, default=os.environ['SM_CHANNEL_USER_INDEX'])
+    parser.add_argument('--item-index', type=str, default=os.environ['SM_CHANNEL_ITEM_INDEX'])
+    
+    parser.add_argument('--current-host', type=str, default=os.environ['SM_CURRENT_HOST'])
+    parser.add_argument('--hosts', type=list, default=json.loads(os.environ['SM_HOSTS']))
+
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    args = parse_args()
+    num_gpus = int(os.environ['SM_NUM_GPUS'])
+    channel_input_dirs = {
+        'train': args.train,
+        'test': args.test,
+        'user_index': args.user_index,
+        'item_index': args.test_index,
+    }
+    
+    hps = {
+        'num-embeddings': args.num_embeddings, 
+        'opt': args.opt, 
+        'lr': args.lr, 
+        'momentum': args.momentum, 
+        'wd': args.wd,
+        'epochs': args.epochs,
+        'num-gpu': args.num_gpu,
+        'batch-size': args.test_index,
+    }
+
+    train(channel_input_dirs, hps, args.hosts, args.current_host, num_gpus, args.model_dir)
+    

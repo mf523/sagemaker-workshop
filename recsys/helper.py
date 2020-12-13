@@ -7,7 +7,7 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 import recmetrics
 
-def get_interactions(dataset_name, filename="interactions.csv.gz"):
+def get_csv(dataset_name, filename):
     data_folder = f'data/{dataset_name}'
     df = pd.read_csv(
         f'{data_folder}/{filename}', 
@@ -18,7 +18,7 @@ def get_interactions(dataset_name, filename="interactions.csv.gz"):
     return df
 
 
-def put_interactions(df, dataset_name, filename="interactions.csv.gz"):
+def put_csv(df, dataset_name, filename):
     data_folder = f'data/{dataset_name}'
     df.to_csv(f"{data_folder}/{filename}", header=True, index=False)
 
@@ -37,7 +37,7 @@ def calculate_quantile(df, col_name, *, quantiles=None):
         quantiles = [0, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 1]
 
     qntl = df_tmp.quantile(quantiles)
-    df_qntl = qntl.to_frame()
+    df_qntl = qntl.to_frame('Observation')
     df_qntl.index.rename('%', inplace=True)
     
     return df_qntl
@@ -46,20 +46,33 @@ def calculate_quantile(df, col_name, *, quantiles=None):
 def draw_quantile(df, col_name, *, quantiles=None):
     df_qntl = calculate_quantile(df, col_name, quantiles=quantiles)
 
-    df_qntl['Percent'] = df_qntl.index
+    df_qntl['Quantiles'] = df_qntl.index
 
 
-    return alt.Chart(df_qntl).mark_line().encode(
+    chart = alt.Chart(df_qntl).mark_line().encode(
         x=alt.X(
-            "Percent:Q",
+            "Quantiles:Q",
             axis=alt.Axis(
                 tickCount=df_qntl.shape[0],
                 grid=False,
                 labelExpr="datum.value % 1 ? null : datum.label",
             )
         ),
-        y=col_name
+        y='Observation'
+    ).properties(
+        title=f'quantile on observations / {col_name}',
+        width=600,
+        height=300,
     )
+    
+    chart.configure_title(
+        fontSize=20,
+        font='Courier',
+        anchor='start',
+        color='gray'
+    )
+    
+    return chart
     
 def draw_long_tail(df, col_name):
     fig = plt.figure(figsize=(15, 7))
