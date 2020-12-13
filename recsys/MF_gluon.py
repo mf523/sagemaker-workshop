@@ -163,7 +163,7 @@ def save(model_dir, model, df_user_index=None, df_item_index=None):
 ######
 
 def load_train_data(training_data_file, batch_size):
-    df = pd.read_csv(training_data_file, delimiter=',', error_bad_lines=False)
+    df = pd.read_csv(training_data_file, delimiter=',', error_bad_lines=False, engine='python')
     df = df[['USER_ID', 'ITEM_ID', 'RATING', '_USER_IDX', '_ITEM_IDX']]
 
     # MXNet data iterators
@@ -177,7 +177,7 @@ def load_train_data(training_data_file, batch_size):
 
 
 def load_test_data(testing_data_file, batch_size):
-    df = pd.read_csv(testing_data_file, delimiter=',', error_bad_lines=False)
+    df = pd.read_csv(testing_data_file, delimiter=',', error_bad_lines=False, engine='python')
     df = df[['USER_ID', 'ITEM_ID', 'RATING', '_USER_IDX', '_ITEM_IDX']]
 
     # MXNet data iterators
@@ -192,13 +192,13 @@ def load_test_data(testing_data_file, batch_size):
 
 
 def load_user_index_data(user_index_data_file):
-    df = pd.read_csv(user_index_data_file, delimiter=',', error_bad_lines=False)
+    df = pd.read_csv(user_index_data_file, delimiter=',', error_bad_lines=False, engine='python')
     
     return df
 
 
 def load_item_index_data(item_index_data_file):
-    df = pd.read_csv(item_index_data_file, delimiter=',', error_bad_lines=False)
+    df = pd.read_csv(item_index_data_file, delimiter=',', error_bad_lines=False, engine='python')
     
     return df
 
