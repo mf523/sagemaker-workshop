@@ -5,7 +5,6 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
 import matplotlib.pyplot as plt
-import recmetrics
 
 def get_csv(dataset_name, filename):
     data_folder = f'data/{dataset_name}'
@@ -75,6 +74,8 @@ def draw_quantile(df, col_name, *, quantiles=None):
     return chart
     
 def draw_long_tail(df, col_name):
+    import recmetrics
+    
     fig = plt.figure(figsize=(15, 7))
     return recmetrics.long_tail_plot(
         df=df, 
