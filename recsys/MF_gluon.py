@@ -11,7 +11,6 @@ import numpy as np
 os.system('pip install pandas')
 import pandas as pd
 
-logging.basicConfig(level=logging.DEBUG)
 
 #########
 # Globals
@@ -21,18 +20,25 @@ logging.basicConfig(level=logging.DEBUG)
 # Training
 ##########
 
-def train(channel_input_dirs, hyperparameters, hosts, current_host, num_gpus, model_dir, **kwargs):
+def train(
+    channel_input_dirs,
+    hyperparameters,
+    hosts,
+    current_host,
+    num_gpus,
+    model_dir,
+    log_level=logging.WARNING,
+    **kwargs
+):
+    logging.basicConfig(level=log_level)
     
     batch_size = hyperparameters.get('batch-size', 1024)
     # get data
     training_dir = channel_input_dirs['train']
-    testing_dir = channel_input_dirs['test']
-    user_index_dir = channel_input_dirs['user_index']
-    item_index_dir = channel_input_dirs['item_index']
-    train_iter = load_train_data(training_dir, batch_size)
-    test_iter = load_test_data(testing_dir, batch_size)
-    df_user_index = load_user_index_data(user_index_dir)
-    df_item_index = load_item_index_data(item_index_dir)
+    train_iter = load_train_data(f'{training_dir}/interactions_train.csv.gz', batch_size)
+    test_iter = load_test_data(f'{training_dir}/interactions_test.csv.gz', batch_size)
+    df_user_index = load_user_index_data(f'{training_dir}/user_index.csv.gz')
+    df_item_index = load_item_index_data(f'{training_dir}/item_index.csv.gz')
     
     # get hyperparameters
     num_embeddings = hyperparameters.get('num-embeddings', 64)
@@ -60,11 +66,15 @@ def train(channel_input_dirs, hyperparameters, hosts, current_host, num_gpus, mo
                                     force_reinit=True)
     net.hybridize()
 
-    trainer = gluon.Trainer(net.collect_params(),
-                            opt,
-                            {'learning_rate': lr,
-                             'wd': wd,
-                             'momentum': momentum})
+    trainer = gluon.Trainer(
+        net.collect_params(),
+        opt,
+        {
+            'learning_rate': lr,
+            'wd': wd,
+            'momentum': momentum
+        }
+    )
     
     # execute
     trained_net = execute(train_iter, test_iter, net, trainer, epochs, ctx, batch_size)
@@ -145,13 +155,14 @@ def eval_net(data, net, ctx, loss_function, batch_size):
 def save(model_dir, model, df_user_index=None, df_item_index=None):
     import os
     
-    os.makedirs(model_dir)
+    os.makedirs(model_dir, exist_ok=True)
+    
     model.save_parameters('{}/model.params'.format(model_dir))
     f = open('{}/MFBlock.params'.format(model_dir), 'w')
-    json.dump({'max_users': net.max_users,
-               'max_items': net.max_items,
-               'num_emb': net.num_emb,
-               'dropout_p': net.dropout_p},
+    json.dump({'max_users': model.max_users,
+               'max_items': model.max_items,
+               'num_emb': model.num_emb,
+               'dropout_p': model.dropout_p},
               f)
     f.close()
     df_user_index.to_csv('{}/user_index.csv'.format(model_dir), index=False)
@@ -265,9 +276,6 @@ def parse_args():
 
     parser.add_argument('--model-dir', type=str, default=os.environ['SM_MODEL_DIR'])
     parser.add_argument('--train', type=str, default=os.environ['SM_CHANNEL_TRAIN'])
-    parser.add_argument('--test', type=str, default=os.environ['SM_CHANNEL_TEST'])
-    parser.add_argument('--user-index', type=str, default=os.environ['SM_CHANNEL_USER_INDEX'])
-    parser.add_argument('--item-index', type=str, default=os.environ['SM_CHANNEL_ITEM_INDEX'])
     
     parser.add_argument('--current-host', type=str, default=os.environ['SM_CURRENT_HOST'])
     parser.add_argument('--hosts', type=list, default=json.loads(os.environ['SM_HOSTS']))
@@ -280,9 +288,6 @@ if __name__ == '__main__':
     num_gpus = int(os.environ['SM_NUM_GPUS'])
     channel_input_dirs = {
         'train': args.train,
-        'test': args.test,
-        'user_index': args.user_index,
-        'item_index': args.item_index,
     }
     
     hps = {
